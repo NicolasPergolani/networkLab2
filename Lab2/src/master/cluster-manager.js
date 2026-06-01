@@ -1,7 +1,7 @@
 const cluster = require('cluster');
 const { getCpuCount, getClusterWorkerCount } = require('../utils/cpu-utils');
 const { createSharedCounter, incrementCounter, readCounter } = require('../shared/shared-counter');
-const { MESSAGE_TYPES } = require('../shared/constants');
+const { MESSAGE_TYPES, INGEST_CRASH_PROBABILITY } = require('../shared/constants');
 const logger = require('../utils/logger');
 
 // Ventana de tiempo usada para controlar cuantas veces se reinician workers.
@@ -10,7 +10,7 @@ const RESTART_WINDOW_MS = 30000;
 const MAX_RESTARTS_PER_WINDOW = 20;
 
 // Conecta eventos IPC desde un worker de cluster hacia responsabilidades del master.
-function attachWorkerMessageHandler(worker, counter) {
+function attachWorkerMessageHandler(worker, counter, perWorkerProcessed) {
   worker.on('message', (message) => {
     if (!message || typeof message !== 'object') {
       return;
@@ -19,6 +19,10 @@ function attachWorkerMessageHandler(worker, counter) {
     // Solo el master incrementa el contador global, garantizando una autoridad unica.
     if (message.type === MESSAGE_TYPES.INGEST_DONE) {
       incrementCounter(counter, 1);
+
+      const workerPid = String(worker.process?.pid || worker.id);
+      const current = perWorkerProcessed.get(workerPid) || 0;
+      perWorkerProcessed.set(workerPid, current + 1);
       return;
     }
 
@@ -28,15 +32,22 @@ function attachWorkerMessageHandler(worker, counter) {
         type: MESSAGE_TYPES.STATS_RESPONSE,
         requestId: message.requestId,
         processedEvents: readCounter(counter),
+        processedByWorker: Object.fromEntries(perWorkerProcessed),
       });
     }
   });
 }
 
 // Crea un worker del cluster y adjunta todos los handlers necesarios.
-function forkWorker(counter) {
+function forkWorker(counter, perWorkerProcessed) {
   const worker = cluster.fork();
-  attachWorkerMessageHandler(worker, counter);
+  const workerPid = String(worker.process?.pid || worker.id);
+
+  if (!perWorkerProcessed.has(workerPid)) {
+    perWorkerProcessed.set(workerPid, 0);
+  }
+
+  attachWorkerMessageHandler(worker, counter, perWorkerProcessed);
   return worker;
 }
 
@@ -56,6 +67,8 @@ function startCluster() {
   const targetWorkers = getClusterWorkerCount();
   // Contador atomico compartido que registra eventos procesados de forma global.
   const { counter } = createSharedCounter();
+  // Conteo acumulado por proceso worker para inspeccionar distribucion real.
+  const perWorkerProcessed = new Map();
   // Ventana deslizante de timestamps para proteger contra loops de reinicio.
   const restartTimestamps = [];
 
@@ -63,10 +76,17 @@ function startCluster() {
     cpuCount,
     targetWorkers,
     strategy: 'half-cpus',
+    ingestCrashProbability: INGEST_CRASH_PROBABILITY,
   });
 
+  if (INGEST_CRASH_PROBABILITY > 0) {
+    logger.warn('Crash simulation enabled', {
+      ingestCrashProbability: INGEST_CRASH_PROBABILITY,
+    });
+  }
+
   for (let index = 0; index < targetWorkers; index += 1) {
-    const worker = forkWorker(counter);
+    const worker = forkWorker(counter, perWorkerProcessed);
     logger.info('Worker forked', { workerId: worker.id, workerPid: worker.process.pid });
   }
 
@@ -80,6 +100,14 @@ function startCluster() {
     pruneRestartTimestamps(restartTimestamps, now);
 
     const abruptExit = deadWorker.exitedAfterDisconnect !== true;
+
+    const bar = '='.repeat(60);
+    process.stderr.write(`\n${bar}\n`);
+    process.stderr.write(
+      `[SELF-HEALING] Worker #${deadWorker.id} (PID ${deadWorker.process.pid}) ` +
+      `murio (code=${code}, signal=${signal || 'none'}).\n`
+    );
+    process.stderr.write(`${bar}\n\n`);
 
     logger.error('Worker exited; creating replacement', {
       deadWorkerId: deadWorker.id,
@@ -104,7 +132,7 @@ function startCluster() {
       });
 
       setTimeout(() => {
-        const replacement = forkWorker(counter);
+        const replacement = forkWorker(counter, perWorkerProcessed);
         logger.info('Replacement worker created after cooldown', {
           deadWorkerId: deadWorker.id,
           replacementWorkerId: replacement.id,
@@ -117,7 +145,11 @@ function startCluster() {
     // Camino normal: registrar reinicio y reemplazar inmediatamente.
     restartTimestamps.push(now);
 
-    const replacement = forkWorker(counter);
+    const replacement = forkWorker(counter, perWorkerProcessed);
+    process.stderr.write(
+      `[SELF-HEALING] Reemplazo lanzado: Worker #${replacement.id} ` +
+      `(PID ${replacement.process.pid}) -> API sigue online.\n\n`
+    );
     logger.info('Replacement worker created', {
       deadWorkerId: deadWorker.id,
       replacementWorkerId: replacement.id,

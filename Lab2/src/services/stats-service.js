@@ -26,7 +26,10 @@ function attachStatsResponseListener() {
 
     pendingStatsRequests.delete(message.requestId);
     clearTimeout(pending.timeout);
-    pending.resolve({ processedEvents: Number(message.processedEvents) || 0 });
+    pending.resolve({
+      processedEvents: Number(message.processedEvents) || 0,
+      processedByWorker: message.processedByWorker,
+    });
   });
 
   listenerAttached = true;
@@ -35,6 +38,21 @@ function attachStatsResponseListener() {
 function buildRequestId() {
   // Suficiente unicidad para correlacion de requests dentro del proceso.
   return `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+// Normaliza el mapa de conteo por worker para devolver siempre numeros validos.
+function normalizeProcessedByWorker(value) {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  const normalized = {};
+
+  for (const [workerPid, count] of Object.entries(value)) {
+    normalized[String(workerPid)] = Number(count) || 0;
+  }
+
+  return normalized;
 }
 
 // Solicita el valor global del contador al master via IPC del cluster.
@@ -55,7 +73,12 @@ function getStats(timeoutMs = 2000) {
     }, timeoutMs);
 
     pendingStatsRequests.set(requestId, {
-      resolve,
+      resolve: (payload) => {
+        resolve({
+          processedEvents: Number(payload?.processedEvents) || 0,
+          processedByWorker: normalizeProcessedByWorker(payload?.processedByWorker),
+        });
+      },
       timeout,
     });
 

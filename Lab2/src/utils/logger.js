@@ -17,14 +17,17 @@ function log(level, message, meta) {
   console.log(`[${timestamp}] [PID:${pid}] [${upperLevel}] ${message}${formatMeta(meta)}`);
 }
 
+// Atajo para registrar eventos informativos.
 function info(message, meta) {
   log('info', message, meta);
 }
 
+// Atajo para registrar advertencias recuperables.
 function warn(message, meta) {
   log('warn', message, meta);
 }
 
+// Atajo para registrar errores relevantes de ejecucion.
 function error(message, meta) {
   log('error', message, meta);
 }

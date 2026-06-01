@@ -141,6 +141,7 @@ class SingleThreadPool {
   }
 }
 
+// Fabrica publica para crear la instancia de cola/worker thread por proceso.
 function createThreadPool() {
   return new SingleThreadPool();
 }
