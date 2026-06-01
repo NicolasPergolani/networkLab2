@@ -6,6 +6,8 @@ const { startWorkerProcess } = require('./worker/worker-process');
 function bootstrap() {
   // El proceso primario solo se encarga de la orquestacion de procesos.
   if (cluster.isPrimary) {
+    // Round-robin explicito para repartir mejor las conexiones entre workers.
+    cluster.schedulingPolicy = cluster.SCHED_RR;
     startCluster();
     return;
   }

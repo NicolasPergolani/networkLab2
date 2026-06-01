@@ -1,5 +1,3 @@
-const { INGEST_CRASH_PROBABILITY } = require('../shared/constants');
-
 // Parsea y valida el parametro query id de ingest.
 function parseNumericId(value) {
   if (typeof value !== 'string') {
@@ -27,26 +25,6 @@ function acceptIngest(idParam, threadPool) {
       ok: false,
       error: 'invalid_or_missing_id',
       statusCode: 400,
-    };
-  }
-
-  // Fallo simulado configurable para probar self-healing sin bloquear el stress test.
-  // Se aplica antes de encolar para evitar marcar como "aceptadas" tareas que se perderian.
-  const crashProbability = Number.isFinite(INGEST_CRASH_PROBABILITY)
-    ? Math.min(1, Math.max(0, INGEST_CRASH_PROBABILITY))
-    : 0;
-  if (Math.random() < crashProbability) {
-    setImmediate(() => {
-      process.stderr.write(
-        `[CRASH SIMULADO] Worker PID=${process.pid} muere antes de encolar id=${parsedId}\n`
-      );
-      process.exit(1);
-    });
-
-    return {
-      ok: false,
-      error: 'simulated_worker_crash',
-      statusCode: 503,
     };
   }
 

@@ -7,6 +7,19 @@ function createSharedCounter() {
   return { buffer, counter };
 }
 
+// Construye una vista Int32 segura sobre un SharedArrayBuffer existente.
+function counterFromBuffer(buffer) {
+  if (!(buffer instanceof SharedArrayBuffer)) {
+    throw new TypeError('counterFromBuffer expects a SharedArrayBuffer');
+  }
+
+  if (buffer.byteLength < SHARED_COUNTER_BYTES) {
+    throw new RangeError('Shared buffer is too small for Int32 counter');
+  }
+
+  return new Int32Array(buffer);
+}
+
 // Ejecuta un incremento atomico seguro para threads y procesos.
 function incrementCounter(counter, delta) {
   const safeDelta = Number.isInteger(delta) && delta > 0 ? delta : 1;
@@ -20,6 +33,7 @@ function readCounter(counter) {
 
 module.exports = {
   createSharedCounter,
+  counterFromBuffer,
   incrementCounter,
   readCounter,
 };

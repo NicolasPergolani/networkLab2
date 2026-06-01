@@ -1,12 +1,15 @@
 const { PORT } = require('../shared/constants');
+const { createSharedCounter } = require('../shared/shared-counter');
 const logger = require('../utils/logger');
 const { createHttpServer } = require('./http-server');
 const { createThreadPool } = require('../threads/thread-pool');
 
 // Inicializa los recursos propios de un proceso worker del cluster.
 function startWorkerProcess() {
+  // Contador compartido entre este proceso worker y su worker thread dedicado.
+  const { buffer: localCounterBuffer } = createSharedCounter();
   // Executor en segundo plano para tareas de ingesta CPU-bound.
-  const threadPool = createThreadPool();
+  const threadPool = createThreadPool({ sharedCounterBuffer: localCounterBuffer });
   // Servidor HTTP que delega ruteo y logica de negocio.
   const server = createHttpServer({ threadPool });
 

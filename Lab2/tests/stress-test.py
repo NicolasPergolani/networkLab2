@@ -9,6 +9,7 @@ BASE_URL = "http://127.0.0.1:8080"
 TOTAL_INGEST_REQUESTS = 500
 HEALTH_PROBE_INTERVAL_SECONDS = 0.05
 STATS_TIMEOUT_SECONDS = 90
+HEALTH_P95_TARGET_MS = 10
 
 
 # Imprime mensajes de estado en tiempo real para facilitar la demo en consola.
@@ -170,7 +171,7 @@ def percentile(values: list[float], p: float) -> float:
 # Escenario principal: rafaga de ingest + probes concurrentes de health + validacion final.
 async def main() -> None:
     # Limite alto de conexiones para evitar cuello de botella del cliente en la rafaga.
-    connector = aiohttp.TCPConnector(limit=1000)
+    connector = aiohttp.TCPConnector(limit=1000, force_close=True)
 
     async with aiohttp.ClientSession(connector=connector) as session:
         log_progress("[start] Ejecutando stress test...")
@@ -187,19 +188,19 @@ async def main() -> None:
             health_probe_loop(session, stop_event, latencies_ms, health_failures)
         )
 
-        # Crea exactamente 500 requests de ingest concurrentes.
+        # Rafaga inicial requerida por consigna: 500 requests simultaneas.
         ingest_tasks = [
             asyncio.create_task(send_ingest_request(session, event_id))
             for event_id in range(1, TOTAL_INGEST_REQUESTS + 1)
         ]
 
         ingest_results = await asyncio.gather(*ingest_tasks)
-        log_progress("[progress] Rafaga de ingest finalizada, validando contador...")
-
         accepted_requests = sum(1 for item in ingest_results if item)
 
-        expected_final_count = baseline_count + accepted_requests
-        # Espera hasta que /stats refleje el total esperado de eventos aceptados.
+        log_progress("[progress] Envio de ingest finalizado, validando contador...")
+
+        expected_final_count = baseline_count + TOTAL_INGEST_REQUESTS
+        # Espera hasta que /stats refleje el objetivo completo de 500 eventos.
         final_stats = await wait_for_expected_stats(session, expected_final_count)
         final_count = int(final_stats.get("processedEvents", 0))
         final_by_worker = normalize_processed_by_worker(final_stats)
@@ -215,7 +216,7 @@ async def main() -> None:
         SEP = "=" * 52
         ok  = lambda v: "OK   " if v else "FALLO"
 
-        c1_ok = accepted_requests > 0
+        c1_ok = accepted_requests == TOTAL_INGEST_REQUESTS
 
         # ── encabezado ────────────────────────────────────────
         print()
@@ -230,36 +231,57 @@ async def main() -> None:
         if accepted_requests == 0:
             print(f"  [{ok(False)}] Node no esta corriendo o 0 aceptadas.")
         elif accepted_requests == TOTAL_INGEST_REQUESTS:
-            print(f"  [{ok(True)}] Las 500 peticiones fueron aceptadas.")
+            print(f"  [{ok(True)}] Entraron exactamente 500 peticiones.")
         else:
-            print(f"  [{ok(False)}] Solo {accepted_requests}/500 aceptadas.")
+            print(f"  [{ok(False)}] Entraron {accepted_requests}/500 peticiones.")
 
         # ── Criterio 2 ────────────────────────────────────────
         print(f"\n[C2] /health bajo carga")
         if latencies_ms:
             p95_ms = percentile(latencies_ms, 0.95)
             avg_ms = statistics.mean(latencies_ms)
-            c2_ok  = health_failures[0] == 0 and p95_ms < 100
+            c2_ok  = health_failures[0] == 0 and p95_ms <= HEALTH_P95_TARGET_MS
             print(f"  Muestras  : {len(latencies_ms)}   Fallos: {health_failures[0]}")
-            print(f"  Promedio  : {avg_ms:.2f} ms   P95: {p95_ms:.2f} ms")
+            print(
+                f"  Promedio  : {avg_ms:.2f} ms   P95: {p95_ms:.2f} ms "
+                f"(objetivo <= {HEALTH_P95_TARGET_MS} ms)"
+            )
             if c2_ok:
-                print(f"  [{ok(True)}] Respondio sin bloqueos (P95={p95_ms:.2f} ms).")
+                print(
+                    f"  [{ok(True)}] Respondio sin bloqueos con latencia cercana a 5 ms "
+                    f"(P95={p95_ms:.2f} ms)."
+                )
             else:
-                print(f"  [{ok(False)}] {health_failures[0]} fallos o P95={p95_ms:.2f} ms > 100 ms.")
+                print(
+                    f"  [{ok(False)}] {health_failures[0]} fallos o "
+                    f"P95={p95_ms:.2f} ms > {HEALTH_P95_TARGET_MS} ms."
+                )
         else:
             c2_ok = False
             print(f"  [{ok(False)}] Sin muestras.")
 
         # ── Criterio 3 ────────────────────────────────────────
-        c3_ok = accepted_requests > 0 and processed_delta == accepted_requests
+        c3_ok = (
+            accepted_requests == TOTAL_INGEST_REQUESTS
+            and processed_delta == TOTAL_INGEST_REQUESTS
+        )
         print(f"\n[C3] Contador compartido (Atomics)")
-        print(f"  Aceptadas : {accepted_requests}   Procesadas: {processed_delta}   Drift: {abs(processed_delta - accepted_requests)}")
+        print(
+            f"  Objetivo  : {TOTAL_INGEST_REQUESTS}   "
+            f"Aceptadas: {accepted_requests}   Procesadas: {processed_delta}   "
+            f"Drift: {abs(processed_delta - TOTAL_INGEST_REQUESTS)}"
+        )
         if accepted_requests == 0:
             print(f"  [{ok(False)}] Sin ingestas, no se puede validar.")
         elif c3_ok:
-            print(f"  [{ok(True)}] delta={processed_delta} == aceptadas={accepted_requests}, drift=0.")
+            print(
+                f"  [{ok(True)}] delta={processed_delta} == objetivo={TOTAL_INGEST_REQUESTS}, drift=0."
+            )
         else:
-            print(f"  [{ok(False)}] drift={accepted_requests - processed_delta}.")
+            print(
+                f"  [{ok(False)}] objetivo={TOTAL_INGEST_REQUESTS}, "
+                f"aceptadas={accepted_requests}, procesadas={processed_delta}."
+            )
 
         # ── Workers ───────────────────────────────────────────
         if per_worker_delta:
@@ -274,6 +296,10 @@ async def main() -> None:
         print(f"\n  C1={ok(c1_ok)}  C2={ok(c2_ok)}  C3={ok(c3_ok)}")
         print("  TODOS LOS CRITERIOS CUMPLIDOS" if all_ok else "  HAY CRITERIOS SIN CUMPLIR")
         print(SEP)
+
+        # Devuelve codigo de salida distinto de cero cuando no se cumple la consigna.
+        if not all_ok:
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

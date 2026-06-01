@@ -1,5 +1,6 @@
-const { isMainThread, parentPort } = require('worker_threads');
+const { isMainThread, parentPort, workerData } = require('worker_threads');
 const { CPU_SIMULATION_ITERATIONS, MESSAGE_TYPES } = require('../shared/constants');
+const { counterFromBuffer, incrementCounter } = require('../shared/shared-counter');
 
 // Simulacion CPU intensiva deterministica usada para demostrar paralelismo real.
 function simulateCpuWork(id, iterations) {
@@ -15,6 +16,8 @@ function simulateCpuWork(id, iterations) {
 
 // Este script se ejecuta dentro del contexto de un Worker Thread.
 if (!isMainThread) {
+  const sharedCounter = counterFromBuffer(workerData.sharedCounterBuffer);
+
   // Recibe tareas de ingest desde el proceso worker del cluster que lo contiene.
   parentPort.on('message', (message) => {
     if (!message || message.type !== MESSAGE_TYPES.INGEST_TASK) {
@@ -25,6 +28,8 @@ if (!isMainThread) {
       const id = Number(message.id);
       // El bucle pesado corre intencionalmente fuera del event loop HTTP.
       const checksum = simulateCpuWork(id, CPU_SIMULATION_ITERATIONS);
+      // El contador se incrementa atomicamente en memoria compartida por hardware.
+      incrementCounter(sharedCounter, 1);
 
       // Notifica finalizacion para que el proceso actualice cola y metricas.
       parentPort.postMessage({
