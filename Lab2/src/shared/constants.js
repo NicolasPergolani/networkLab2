@@ -13,7 +13,7 @@ const CPU_SIMULATION_ITERATIONS = Number.parseInt(
 );
 // Probabilidad de fallo simulado por request valida de ingest (0.0 a 1.0).
 const INGEST_CRASH_PROBABILITY = Number.parseFloat(
-  process.env.INGEST_CRASH_PROBABILITY || '0'
+  process.env.INGEST_CRASH_PROBABILITY || '0.12'
 );
 
 // Contrato de mensajes IPC entre procesos worker, worker threads y master.

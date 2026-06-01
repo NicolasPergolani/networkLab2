@@ -138,8 +138,11 @@ python -m pip install aiohttp
 $env:PORT="8080"
 $env:CPU_SIMULATION_ITERATIONS="30000000"
 $env:INGEST_QUEUE_MAX_SIZE="20000"
+$env:INGEST_CRASH_PROBABILITY="0.12"
 node src/app.js
 ```
+
+Si no defines `INGEST_CRASH_PROBABILITY`, el sistema usa `0.12` por defecto.
 
 ## 6) Como probar
 
